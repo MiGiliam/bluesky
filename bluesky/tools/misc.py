@@ -9,10 +9,11 @@ Modules:
 
 Created by  : Jacco M. Hoekstra
 """
-
-from numpy import *
 from time import strftime, gmtime
+import numpy as np
+
 from .aero import cas2tas, mach2tas, kts, fpm, ft
+from .geo import magdec
 
 
 def txt2alt(txt):
@@ -34,26 +35,23 @@ def tim2txt(t):
 
 def txt2tim(txt):
     """Convert text to time in seconds:
-       HH
-       HH:MM
-       HH:MM:SS
-       HH:MM:SS.hh
+       SS.hh
+       MM:SS.hh
+       HH.MM.SS.hh
     """
     timlst = txt.strip().split(":")
 
-    t = 0.0
     try:
-        # HH
-        if timlst[0]:
-            t += 3600.0 * int(timlst[0])
+        # Always SS.hh
+        t = float(timlst[-1])
 
         # MM
-        if len(timlst) > 1 and timlst[1]:
-            t += 60.0 * int(timlst[1])
+        if len(timlst) > 1 and timlst[-2]:
+            t += 60.0 * int(timlst[-2])
 
-        # SS.hh
-        if len(timlst) > 2 and timlst[2]:
-            t += float(timlst[2])
+        # HH
+        if len(timlst) > 2 and timlst[-3]:
+            t += 3600.0 * int(timlst[-3])
 
         return t
     except (ValueError, IndexError):
@@ -75,11 +73,19 @@ def i2txt(i, n):
     return '{:0{}d}'.format(i, n)
 
 
-def txt2hdg(txt):
-    ''' Convert text to heading. '''
-    # TODO: take care of difference between magnetic/true heading?
-    # Would need reference position.
-    return float(txt.upper().replace("T", "").replace("M", ""))
+def txt2hdg(txt, lat=None, lon=None):
+    ''' Convert text to true or magnetic heading.
+    Modified by : Yaofu Zhou'''
+    heading = float(txt.upper().replace("T", "").replace("M", ""))
+
+    if "M" in txt.upper():
+        if None in (lat, lon):
+            raise ValueError('txt2hdg needs a reference latitude and longitude '
+                             'when a magnetic heading is parsed.')
+        magnetic_declination = magdec(lat, lon)
+        heading = (heading + magnetic_declination) % 360.0
+
+    return heading
 
 
 def txt2vs(txt):
@@ -99,7 +105,7 @@ def txt2spd(txt):
 
         Arguments:
         - txt: text string representing speed
-        
+
         Returns:
         - Speed in meters per second or Mach.
     """
@@ -145,7 +151,7 @@ def col2rgb(txt):
             "yellow": (240, 255, 127), "amber": (255, 255, 0), "cyan": (0, 255, 255)}
     try:
         rgb = cols[txt.lower().strip()]
-    except:
+    except KeyError:
         rgb = cols["white"]  # default
 
     return rgb
@@ -157,21 +163,20 @@ def degto180(angle):
 
 def degtopi(angle):
     """Change to domain -pi,pi """
-    return (angle + pi) % (2.*pi) - pi
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
 
 def findnearest(lat, lon, latarr, lonarr):
     """Find index of nearest postion in numpy arrays with lat and lon"""
     if len(latarr) > 0 and len(latarr) == len(lonarr):
-        coslat = cos(radians(lat))
-        dy = radians(lat - latarr)
-        dx = coslat * radians(degto180(lon - lonarr))
+        coslat = np.cos(np.radians(lat))
+        dy = np.radians(lat - latarr)
+        dx = coslat * np.radians(degto180(lon - lonarr))
         d2 = dx * dx + dy * dy
         idx = list(d2).index(d2.min())
 
         return idx
-    else:
-        return -1
+    return -1
 
 
 def cmdsplit(cmdline, trafids=None):
@@ -207,7 +212,8 @@ def txt2lat(lattxt):
     txt = lattxt.upper().replace("N", "").replace("S", "-")  # North positive, South negative
     neg = txt.count("-") > 0
 
-    # Use of "'" and '"' as delimiter for degrees/minutes/seconds (also accept degree symbol chr(176))
+    # Use of "'" and '"' as delimiter for degrees/minutes/seconds
+    # (also accept degree symbol chr(176))
     if txt.count("'") > 0 or txt.count('"') > 0 or txt.count(chr(176)) > 0:
         txt = txt.replace('"', "'").replace(chr(176),"'")# replace " or degree symbol and  by a '
         degs = txt.split("'")
@@ -239,15 +245,16 @@ def txt2lon(lontxt):
         lon = float(lontxt)
 
     # Leading E will trigger error ansd means simply East,just as  W = West = Negative
-    except:
+    except ValueError:
 
         txt = lontxt.upper().replace("E", "").replace("W", "-")  # East positive, West negative
         neg = txt.count("-") > 0
 
-        # Use of "'" and '"' as delimiter for degrees/minutes/seconds (also accept degree symbol chr(176))
-        # Also "W002'"
+        # Use of "'" and '"' as delimiter for degrees/minutes/seconds
+        # (also accept degree symbol chr(176)). Also "W002'"
         if txt.count("'") > 0 or txt.count('"') or txt.count(chr(176))> 0:
-            txt = txt.replace('"', "'").replace(chr(176),"'")  # replace " or degree symbol and  by a '
+            # replace " or degree symbol and  by a '
+            txt = txt.replace('"', "'").replace(chr(176),"'")
             degs = txt.split("'")
             div = 1
             lon = 0.0
@@ -258,10 +265,10 @@ def txt2lon(lontxt):
             for xtxt in degs:
                 if len(xtxt)>0.0:
                     try:
-                       lon = lon + f * abs(float(xtxt)) / float(div)
-                    except:
-                       print("txt2lon value error:",lontxt)
-                       return 0.0
+                        lon = lon + f * abs(float(xtxt)) / float(div)
+                    except ValueError:
+                        print("txt2lon value error:",lontxt)
+                        return 0.0
 
                 div = div * 60
         else:  # Cope with "W65"without "'" or '"', also "-65" or "--65"
@@ -272,21 +279,24 @@ def txt2lon(lontxt):
                 else:
                     f = 1.
                 lon = f*abs(float(txt))
-            except:
+            except ValueError:
                 print("txt2lon value error:",lontxt)
                 return 0.0
 
     return lon
 
 def lat2txt(lat):
+    ''' Convert latitude into string (N/Sdegrees'minutes'seconds). '''
     d,m,s = float2degminsec(abs(lat))
     return "NS"[lat<0] + "%02d'%02d'"%(int(d),int(m))+str(s)+'"'
 
 def lon2txt(lon):
+    ''' Convert longitude into string (E/Wdegrees'minutes'seconds). '''
     d,m,s = float2degminsec(abs(lon))
     return "EW"[lon<0] + "%03d'%02d'"%(int(d),int(m))+str(s)+'"'
 
 def latlon2txt(lat,lon):
+    ''' Convert latitude and longitude in latlon string. '''
     return lat2txt(lat)+"  "+lon2txt(lon)
 
 def deg180(dangle):
@@ -294,13 +304,15 @@ def deg180(dangle):
     return (dangle + 180.) % 360. - 180.
 
 def float2degminsec(x):
+    ''' Convert an angle into a string describing the angle in degrees,
+        minutes, and seconds. '''
     deg     = int(x)
     minutes = int(x*60.) - deg *60.
     sec     = int(x*3600.) - deg*3600. - minutes*60.
     return deg,minutes,sec
 
 def findall(lst,x):
-    # Find indices of multiple occurences of x in lst
+    ''' Find indices of multiple occurences of x in lst. '''
     idx = []
     i = 0
     found = True
@@ -310,6 +322,6 @@ def findall(lst,x):
             idx.append(i)
             i = i + 1
             found = True
-        except:
+        except ValueError:
             found = False
     return idx

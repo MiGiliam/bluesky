@@ -4,13 +4,18 @@ import numpy as np
 import bluesky as bs
 from bluesky.core import Entity
 from bluesky.stack import command
+from bluesky.tools.aero import nm,ft
 
 
-bs.settings.set_variable_defaults(asas_mar=1.01)
+bs.settings.set_variable_defaults(asas_marh=1.01, asas_marv=1.01)
 
 
 class ConflictResolution(Entity, replaceable=True):
     ''' Base class for Conflict Resolution implementations. '''
+    # ConflictResolution on/off switch. Set to True whenever another
+    # implementation than the base implementation (ConflictResolution) is selected.
+    do_cr = False
+
     def __init__(self):
         super().__init__()
         # [-] switch to activate priority rules for conflict resolution
@@ -21,8 +26,12 @@ class ConflictResolution(Entity, replaceable=True):
         # Resolution factors:
         # set < 1 to maneuver only a fraction of the resolution
         # set > 1 to add a margin to separation values
-        self.resofach = bs.settings.asas_mar
-        self.resofacv = bs.settings.asas_mar
+        self.resofach = bs.settings.asas_marh
+        self.resofacv = bs.settings.asas_marv
+
+        # Switches to guarantee last reso zone commands keep valid if cd zone changes
+        self.resodhrelative = True # Size of resolution zone dh, vertically, set relative to CD zone
+        self.resorrelative  = True # Size of resolution zone r, vertically, set relative to CD zone
 
         with self.settrafarrays():
             self.resooffac = np.array([], dtype=np.bool)
@@ -34,23 +43,40 @@ class ConflictResolution(Entity, replaceable=True):
             self.alt = np.array([])  # alt provided by the ASAS [m]
             self.vs = np.array([])  # vspeed provided by the ASAS [m/s]
 
-    # By default all channels are controlled by self.active, but they can be overloaded with separate
-    # variables or functions in a derived ASAS Conflict Resolution class
-    # ( @property decorator takes away need for brackets when calling it so it can be overloaded by a variable)
+    # By default all channels are controlled by self.active,
+    # but they can be overloaded with separate variables or functions in a
+    # derived ASAS Conflict Resolution class (@property decorator takes away
+    # need for brackets when calling it so it can be overloaded by a variable)
     @property
     def hdgactive(self):
+        ''' Return a boolean array sized according to the number of aircraft
+            with True for all elements where heading is currently controlled by
+            the conflict resolution algorithm.
+        '''
         return self.active
 
     @property
     def vsactive(self):
+        ''' Return a boolean array sized according to the number of aircraft
+            with True for all elements where vertical speed is currently
+            controlled by the conflict resolution algorithm.
+        '''
         return self.active
 
     @property
     def altactive(self):
+        ''' Return a boolean array sized according to the number of aircraft
+            with True for all elements where altitude is currently controlled by
+            the conflict resolution algorithm.
+        '''
         return self.active
 
     @property
     def tasactive(self):
+        ''' Return a boolean array sized according to the number of aircraft
+            with True for all elements where speed is currently controlled by
+            the conflict resolution algorithm.
+        '''
         return self.active
 
     def resolve(self, conf, ownship, intruder):
@@ -67,9 +93,10 @@ class ConflictResolution(Entity, replaceable=True):
 
     def update(self, conf, ownship, intruder):
         ''' Perform an update step of the Conflict Resolution implementation. '''
-        if conf.confpairs:
-            self.trk, self.tas, self.vs, self.alt = self.resolve(conf, ownship, intruder)
-        self.resumenav(conf, ownship, intruder)
+        if ConflictResolution.do_cr:
+            if conf.confpairs:
+                self.trk, self.tas, self.vs, self.alt = self.resolve(conf, ownship, intruder)
+            self.resumenav(conf, ownship, intruder)
 
     def resumenav(self, conf, ownship, intruder):
         '''
@@ -118,8 +145,9 @@ class ConflictResolution(Entity, replaceable=True):
                 # If two aircraft are getting in and out of conflict continously,
                 # then they it is a bouncing conflict. ASAS should stay active until
                 # the bouncing stops.
-                is_bouncing = abs(
-                    ownship.trk[idx1] - intruder.trk[idx2]) < 30.0 and hdist < conf.rpz * self.resofach
+                is_bouncing = \
+                    abs(ownship.trk[idx1] - intruder.trk[idx2]) < 30.0 and \
+                    hdist < conf.rpz * self.resofach
 
             # Start recovery for ownship if intruder is deleted, or if past CPA
             # and not in horizontal LOS or a bouncing conflict
@@ -182,25 +210,60 @@ class ConflictResolution(Entity, replaceable=True):
             return True, 'NORESO [ACID, ... ] OR NORESO [GROUPID]' + \
                          '\nCurrent list of aircraft will not avoid anybody:' + \
                          ', '.join(np.array(bs.traf.id)[self.resooffac])
-        idx = list(idx)
-        self.resooffac[idx] = np.logical_not(self.resooffac[idx])
-        return True
+        else:
+            idx = list(idx)
+            self.resooffac[idx] = np.logical_not(self.resooffac[idx])
+            return True
 
     @command(name='RFACH', aliases=('RESOFACH',))
     def setresofach(self, factor : float = None):
-        ''' Set resolution factor horizontal (to maneuver only a fraction of a resolution vector) '''
+        ''' Set resolution factor horizontal
+            (to maneuver only a fraction of a resolution vector)
+        '''
         if factor is None:
             return True, f'RFACH [FACTOR]\nCurrent horizontal resolution factor is: {self.resofach}'
-        self.resofach = factor
-        return True, f'Horizontal resolution factor set to {self.resofach}'
+        else:
+            self.resofach = factor
+            self.resorrelative = True  # Size of resolution zone r, vertically, set relative to CD zone
+            return True, f'Horizontal resolution factor set to {self.resofach}'
 
     @command(name='RFACV', aliases=('RESOFACV',))
-    def setresofacv(self, factor : float = None):
+    def setresofacv(self, factor: float = None):
         ''' Set resolution factor vertical (to maneuver only a fraction of a resolution vector). '''
         if factor is None:
             return True, f'RFACV [FACTOR]\nCurrent vertical resolution factor is: {self.resofacv}'
-        self.resofacv = factor
-        return True, f'Vertical resolution factor set to {self.resofacv}'
+        else:
+            bs.traf.asas_marv = factor
+            self.resofacv = factor
+            self.resodhrelative = True  # Size of resolution zone dh, vertically, set relative to CD zone
+            return True, f'Vertical resolution factor set to {self.resofacv}'
+
+    @command(name='RSZONER', aliases=('RESOZONER',))
+    def setresozoner(self, zoner : float = None):
+        ''' Set resolution factor horizontal, but then with absolute value
+            (to maneuver only a fraction of a resolution vector)
+        '''
+        if zoner is None:
+            return True, f'RSZONER [radiusnm]\nCurrent horizontal resolution radius is: {self.resofach*bs.traf.cd.rpz/nm} nm'
+        else:
+            bs.traf.asas_marh = zoner * nm / np.maximum(0.01, bs.traf.cd.rpz)
+            self.resofach = bs.traf.asas_marh
+            self.resorrelative = False  # Size of resolution zone r, vertically, no longer relative to CD zone
+            return True, f'Horizontal resolution zoner set to {zoner} nm'
+
+    @command(name='RSZONEDH', aliases=('RESOZONEDH',))
+    def setresozonedh(self, zonedh : float = None):
+        '''
+        Set resolution factor vertical (to maneuver only a fraction of a resolution vector),
+        but then with absolute value
+        '''
+        if zonedh is None:
+            return True, f'RSZONEDH [zonedhft]\nCurrent vertical resolution factor is: {self.resofacv*bs.traf.cd.hpz/ft} ft'
+        else:
+            bs.traf.asas_marv = zonedh * ft / np.maximum(0.01, bs.traf.cd.hpz)
+            self.resofacv = bs.traf.asas_marv
+            self.resodhrelative = False  # Size of resolution zone dh, vertically, no longer relative to CD zone
+            return True, f'Vertical resolution zonedh set to {zonedh} ft'
 
     @staticmethod
     @command(name='RESO')
@@ -209,7 +272,7 @@ class ConflictResolution(Entity, replaceable=True):
         # Get a dict of all registered CR methods
         methods = ConflictResolution.derived()
         names = ['OFF' if n == 'CONFLICTRESOLUTION' else n for n in methods]
-        
+
         if not name:
             curname = 'OFF' if ConflictResolution.selected() is ConflictResolution \
                 else ConflictResolution.selected().__name__
@@ -217,6 +280,7 @@ class ConflictResolution(Entity, replaceable=True):
                          f'\nAvailable CR methods: {", ".join(names)}'
         # Check if the requested method exists
         if name == 'OFF':
+            ConflictResolution.do_cr = False
             ConflictResolution.select()
             return True, 'Conflict Resolution turned off.'
         method = methods.get(name, None)
@@ -226,4 +290,5 @@ class ConflictResolution(Entity, replaceable=True):
 
         # Select the requested method
         method.select()
+        ConflictResolution.do_cr = True
         return True, f'Selected {method.__name__} as CR method.'

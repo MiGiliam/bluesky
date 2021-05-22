@@ -77,7 +77,7 @@ class Parameter:
             if self.hasdefault():
                 return self.default, argstring
             if self.optional:
-                return (argstring,)
+                return (None, argstring) if argstring else ('',)
             raise TypeError(f'Missing argument {self.name}')
         # Try available parsers
         error = ''
@@ -224,6 +224,8 @@ class PosArg(Parser):
         # Check if lat/lon combination
         if islat(argu):
             nextarg, argstring = re_getarg.match(argstring).groups()
+            refdata.lat = txt2lat(argu)
+            refdata.lon = txt2lon(nextarg)
             return txt2lat(argu), txt2lon(nextarg), argstring
 
         # apt,runway ? Combine into one string with a slash as separator
@@ -290,6 +292,6 @@ argparsers = {
     'spd': Parser(txt2spd),
     'vspd': Parser(txt2vs),
     'alt': Parser(txt2alt),
-    'hdg': Parser(txt2hdg),
+    'hdg': Parser(lambda txt: txt2hdg(txt, refdata.lat, refdata.lon)),
     'time': Parser(txt2tim),
     'color': ColorArg()}

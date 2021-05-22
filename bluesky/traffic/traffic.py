@@ -12,9 +12,10 @@ import numpy as np
 import bluesky as bs
 from bluesky.core import Entity, timed_function
 from bluesky.stack import refdata
+from bluesky.stack.recorder import savecmd
 from bluesky.tools import geo
 from bluesky.tools.misc import latlon2txt
-from bluesky.tools.aero import fpm, kts, ft, g0, Rearth, nm, tas2cas,\
+from bluesky.tools.aero import cas2tas, casormach2tas, fpm, kts, ft, g0, Rearth, nm, tas2cas,\
                          vatmos,  vtas2cas, vtas2mach, vcasormach
 
 
@@ -181,7 +182,7 @@ class Traffic(Entity):
         # Reset transition level to default value
         self.translvl = 5000.*ft
 
-    def mcre(self, n, actype="b744", acalt=None, acspd=None, dest=None):
+    def mcre(self, n, actype="B744", acalt=None, acspd=None, dest=None):
         """ Create one or more random aircraft in a specified area """
         area = bs.scr.getviewbounds()
 
@@ -198,18 +199,8 @@ class Traffic(Entity):
 
         self.cre(acid, actype, aclat, aclon, achdg, acalt, acspd)
 
-        # SAVEIC: save cre command when filled in
-        # Special provision in case SAVEIC is on: then save individual CRE commands
-        # Names of aircraft (acid) need to be recorded for saved future commands
-        # And positions need to be the same in case of *MCRE"
-        for i in range(n):
-            bs.stack.savecmd("CRE", " ".join(["CRE", acid[i], actype,
-                                              str(aclat[i]), str(aclon[i]), 
-                                              str(int(round(achdg[i]))),
-                                              str(int(round(acalt[i]/ft))),
-                                              str(int(round(acspd[i]/kts)))]))
 
-    def cre(self, acid, actype, aclat, aclon, achdg=None, acalt=0, acspd=0):
+    def cre(self, acid, actype="B744", aclat=52., aclon=4., achdg=None, acalt=0, acspd=0):
         """ Create one or more aircraft. """
         # Determine number of aircraft to create from array length of acid
         n = 1 if isinstance(acid, str) else len(acid)
@@ -223,6 +214,9 @@ class Traffic(Entity):
         # Adjust the size of all traffic arrays
         super().create(n)
         self.ntraf += n
+
+        if isinstance(actype, str):
+            actype = n * [actype]
 
         if isinstance(aclat, (float, int)):
             aclat = np.array(n * [aclat])
@@ -294,19 +288,44 @@ class Traffic(Entity):
         # manually in Traffic.
         self.create_children(n)
 
-    def creconfs(self, acid, actype, targetidx, dpsi, cpa, tlosh, dH=None, tlosv=None, spd=None):
+        # Record as individual CRE commands for repeatability
+        #print(self.ntraf-n,self.ntraf)
+        for j in range(self.ntraf-n,self.ntraf):
+            # Reconstruct CRE command
+            line = "CRE "+",".join([self.id[j],self.type[j],
+                                    str(self.lat[j]),str(self.lon[j]),
+                                    str(round(self.trk[j])),str(round(self.alt[j]/ft)),
+                                    str(round(self.cas[j]/kts))])
+            # Savecmd(cmd,line): line is saved, cmd is used to prevent recording PAN & ZOOM commands and CRE
+            # So insert a dummy command to record the line
+            savecmd("---",line)
+
+    def creconfs(self, acid, actype, targetidx, dpsi, dcpa, tlosh, dH=None, tlosv=None, spd=None):
+        ''' Create an aircraft in conflict with target aircraft.
+
+            Arguments:
+            - acid: callsign of new aircraft
+            - actype: aircraft type of new aircraft
+            - targetidx: id (callsign) of target aircraft
+            - dpsi: Conflict angle (angle between tracks of ownship and intruder) (deg)
+            - cpa: Predicted distance at closest point of approach (NM)
+            - tlosh: Horizontal time to loss of separation ((hh:mm:)sec)
+            - dH: Vertical distance (ft)
+            - tlosv: Vertical time to loss of separation
+            - spd: Speed of new aircraft (CAS/Mach, kts/-)
+        '''
         latref  = self.lat[targetidx]  # deg
         lonref  = self.lon[targetidx]  # deg
         altref  = self.alt[targetidx]  # m
         trkref  = radians(self.trk[targetidx])
         gsref   = self.gs[targetidx]   # m/s
+        tasref  = self.tas[targetidx]   # m/s
         vsref   = self.vs[targetidx]   # m/s
-        cpa     = cpa * nm
+        cpa     = dcpa * nm
         pzr     = bs.settings.asas_pzr * nm
         pzh     = bs.settings.asas_pzh * ft
-
         trk     = trkref + radians(dpsi)
-        gs      = gsref if spd is None else spd
+
         if dH is None:
             acalt = altref
             acvs  = 0.0
@@ -315,8 +334,18 @@ class Traffic(Entity):
             tlosv = tlosh if tlosv is None else tlosv
             acvs  = vsref - np.sign(dH) * (abs(dH) - pzh) / tlosv
 
+        if spd:
+            # CAS or Mach provided: convert to groundspeed, assuming that
+            # wind at intruder position is similar to wind at ownship position
+            tas = tasref if spd is None else casormach2tas(spd, acalt)
+            tasn, tase = tas * cos(trk), tas * sin(trk)
+            wn, we = self.wind.getdata(latref, lonref, acalt)
+            gsn, gse = tasn + wn, tase + we
+        else:
+            # Groundspeed is the same as ownship
+            gsn, gse = gsref * cos(trk), gsref * sin(trk)
+
         # Horizontal relative velocity vector
-        gsn, gse     = gs    * cos(trk),          gs    * sin(trk)
         vreln, vrele = gsref * cos(trkref) - gsn, gsref * sin(trkref) - gse
         # Relative velocity magnitude
         vrel    = sqrt(vreln * vreln + vrele * vrele)
@@ -333,15 +362,15 @@ class Traffic(Entity):
 
         # Calculate intruder lat/lon
         aclat, aclon = geo.kwikpos(latref, lonref, brn, dist / nm)
-
-        # convert groundspeed to CAS, and track to heading
+        # convert groundspeed to CAS, and track to heading using actual
+        # intruder position
         wn, we     = self.wind.getdata(aclat, aclon, acalt)
         tasn, tase = gsn - wn, gse - we
         acspd      = tas2cas(sqrt(tasn * tasn + tase * tase), acalt)
         achdg      = degrees(atan2(tase, tasn))
 
         # Create and, when necessary, set vertical speed
-        self.create(1, actype, acalt, acspd, None, aclat, aclon, achdg, acid)
+        self.cre(acid, actype, aclat, aclon, achdg, acalt, acspd)
         self.ap.selaltcmd(len(self.lat) - 1, altref, acvs)
         self.vs[-1] = acvs
 
@@ -425,10 +454,15 @@ class Traffic(Entity):
         self.hdg = np.where(self.swhdgsel, 
                             self.hdg + bs.sim.simdt * turnrate * np.sign(delhdg), self.aporasas.hdg) % 360.0
 
-        # Update vertical speed
+        # Update vertical speed (alt select, capture and hold autopilot mode)
         delta_alt = self.aporasas.alt - self.alt
-        self.swaltsel = np.abs(delta_alt) > np.maximum(
-            10 * ft, np.abs(2 * np.abs(bs.sim.simdt * self.vs)))
+        # Old dead band version:
+        #        self.swaltsel = np.abs(delta_alt) > np.maximum(
+        #            10 * ft, np.abs(2 * bs.sim.simdt * self.vs))
+
+        # Update version: time based engage of altitude capture (to adapt for UAV vs airliner scale)
+        self.swaltsel = np.abs(delta_alt) >  1.05*np.maximum(np.abs(bs.sim.simdt * self.aporasas.vs), \
+                                                         np.abs(bs.sim.simdt * self.vs))
         target_vs = self.swaltsel * np.sign(delta_alt) * np.abs(self.aporasas.vs)
         delta_vs = target_vs - self.vs
         # print(delta_vs / fpm)
@@ -530,6 +564,7 @@ class Traffic(Entity):
     def poscommand(self, idxorwp):# Show info on aircraft(int) or waypoint or airport (str)
         """POS command: Show info or an aircraft, airport, waypoint or navaid"""
         # Aircraft index
+
         if type(idxorwp)==int and idxorwp >= 0:
 
             idx           = idxorwp

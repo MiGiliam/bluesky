@@ -12,6 +12,9 @@ import bluesky as bs
 from .discovery import Discovery
 
 
+# Keep subset of commandline args to pass on to child processes
+childargs = [a for a in sys.argv[1:] if 'headless' not in a]
+
 # Register settings defaults
 bs.settings.set_variable_defaults(max_nnodes=cpu_count(),
                                   event_port=9000, stream_port=9001,
@@ -31,7 +34,7 @@ def split_scenarios(scentime, scencmd):
 class Server(Thread):
     ''' Implementation of the BlueSky simulation server. '''
 
-    def __init__(self, headless):
+    def __init__(self, discovery):
         super().__init__()
         self.spawned_processes = list()
         self.running = True
@@ -43,7 +46,7 @@ class Server(Thread):
         self.servers = {self.host_id : dict(route=[], nodes=self.workers)}
         self.avail_workers = dict()
 
-        if bs.settings.enable_discovery or headless:
+        if bs.settings.enable_discovery or discovery:
             self.discovery = Discovery(self.host_id, is_client=False)
         else:
             self.discovery = None
@@ -57,7 +60,7 @@ class Server(Thread):
     def addnodes(self, count=1):
         ''' Add [count] nodes to this server. '''
         for _ in range(count):
-            p = Popen([sys.executable, 'BlueSky.py', '--sim'])
+            p = Popen([sys.executable, 'BlueSky.py', '--sim', *childargs])
             self.spawned_processes.append(p)
 
     def run(self):

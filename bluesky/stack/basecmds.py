@@ -5,7 +5,7 @@ import os
 import bluesky as bs
 from bluesky import settings
 from bluesky.core import select_implementation, plugin, simtime, varexplorer as ve
-from bluesky.tools import geo, areafilter, plotter, datalog
+from bluesky.tools import geo, areafilter, plotter
 from bluesky.tools.calculator import calculator
 from bluesky.stack.cmdparser import append_commands
 
@@ -30,7 +30,7 @@ def initbasecmds():
     #   acid      = aircraft id (text => index)
     #   alt       = altitude (FL250, 25000  ft+. meters)
     #   spd       = CAS or Mach (when <1)   => m/s
-    #   hdg       = heading in degrees
+    #   hdg       = heading in degrees, True or Magnetic
     #
     #   float     = plain float
     #   int       = integer
@@ -89,8 +89,8 @@ def initbasecmds():
             "Altitude command (autopilot)",
         ],
         "AT": [
-            "acid AT wpname [DEL] SPD/ALT [spd/alt]",
-            "acid,wpinroute,[txt,txt]",
+            "acid AT wpname [DEL] SPD/ALT/DO [spd/alt/command line]",
+            "acid,wpinroute,[txt,txt,...]",
             lambda idx, *args: bs.traf.ap.route[idx].atwptStack(idx, *args),
             "Edit, delete or show spd/alt constraints at a waypoint in the route",
         ],
@@ -99,6 +99,12 @@ def initbasecmds():
             "acid,alt,string",
             bs.traf.cond.ataltcmd,
             "When a/c at given altitude , execute a command cmd",
+        ],
+        "ATDIST": [
+            "acid ATDIST pos dist cmd ",
+            "acid,latlon,float,string",
+            bs.traf.cond.atdistcmd,
+            "When a/c passing this distance[nm] to position, execute the command cmd",
         ],
         "ATSPD": [
             "acid ATSPD spd cmd ",
@@ -178,12 +184,6 @@ def initbasecmds():
             "txt,txt,acid,hdg,float,time,[alt,time,spd]",
             bs.traf.creconfs,
             "Create an aircraft that is in conflict with 'targetid'",
-        ],
-        "CRELOG": [
-            "CRELOG LOGNAME, [dt,header]",
-            "txt,[float,string]",
-            datalog.crelog,
-            "Create a new data logger.",
         ],
         "DATE": [
             "DATE [day,month,year,HH:MM:SS.hh]",
@@ -303,8 +303,8 @@ def initbasecmds():
             + "A group is created when a group with the given name doesn't exist yet.",
         ],
         "HDG": [
-            "HDG acid,hdg (deg,True)",
-            "acid,float",
+            "HDG acid,hdg (deg,True or Magnetic)",
+            "acid,hdg",
             bs.traf.ap.selhdgcmd,
             "Heading command (autopilot)",
         ],
@@ -350,6 +350,12 @@ def initbasecmds():
             "[word]",
             ve.lsvar,
             "Inspect any variable in a bluesky simulation",
+        ],
+        "MAGVAR": [
+            "MAGVAR lat,lon",
+            "lat,lon",
+            bs.tools.geo.magdeccmd,
+            "Show magnetic variation/declination at position",
         ],
         "MCRE": [
             "MCRE n, [type/*, alt/*, spd/*, dest/*]",
@@ -514,7 +520,7 @@ def initbasecmds():
         "WIND": [
             "WIND lat,lon,alt/*,dir,spd,[alt,dir,spd,alt,...]",
             # last 3 args are repeated
-            "latlon,[alt],float,float,...,",
+            "latlon,[alt],float,alt/float,...,",
             bs.traf.wind.add,
             "Define a wind vector as part of the 2D or 3D wind field",
         ],
@@ -561,6 +567,8 @@ def initbasecmds():
         "IMPL": "IMPLEMENTATION",
         "IMPLEMENT": "IMPLEMENTATION",
         "LINES": "POLYLINE",
+        "MAGDEC": "MAGVAR",
+        "MAGDECL":"MAGVAR",
         "PAUSE": "HOLD",
         "PLUGIN": "PLUGINS",
         "PLUG-IN": "PLUGINS",
@@ -579,6 +587,7 @@ def initbasecmds():
         "START": "OP",
         "TRAILS": "TRAIL",
         "TURN": "HDG",
+        "VAR": "MAGVAR"
     }
 
     append_commands(cmddict, synonyms)

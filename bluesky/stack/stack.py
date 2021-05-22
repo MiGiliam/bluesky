@@ -308,12 +308,12 @@ def pcall(fname, *pcall_arglst):
 
 
 @command(aliases=('LOAD', 'OPEN'))
-def ic(filename=""):
-    """ IC: Load a scenario file (initial condition).
+def ic(filename : 'string' = ''):
+    ''' IC: Load a scenario file (initial condition).
 
         Arguments:
         - filename: The filename of the scenario to load. Call IC IC
-          to load previous scenario again. """
+          to load previous scenario again. '''
     global scenname
 
     # reset sim always
@@ -349,7 +349,7 @@ def ic(filename=""):
             return False, f"IC: File not found: {filename}"
 
 
-@command(aliases='SCEN')
+@command(aliases=('SCEN',))
 def scenario(name: 'string'):
     """ SCENARIO sets the scenario name for the current simulation.
 
